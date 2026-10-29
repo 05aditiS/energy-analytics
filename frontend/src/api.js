@@ -2,8 +2,7 @@
  * ZEPHYR API Client with Full Embedded Deterministic Fallback.
  * Ensures the executive dashboard never breaks even if backend is offline or loading.
  */
-
-const API_BASE_URL = import.meta.env.VITE_API_URL || import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || import.meta.env.VITE_API_URL || 'http://localhost:8000';
 
 // Deterministic mock fallback generator for January 2026
 function generateDeterministicDay(dateStr) {
@@ -80,6 +79,23 @@ export const api = {
     } catch (err) {
       console.warn(`API getDayAhead fallback for ${dateStr}:`, err.message);
       return generateDeterministicDay(dateStr);
+    }
+  },
+
+  async getAllDayAhead(dates = []) {
+    try {
+      const results = await Promise.all(
+        dates.map((d) => this.getDayAhead(d).catch(() => null))
+      );
+      const allPeriods = [];
+      results.forEach((res) => {
+        if (res && res.settlementPeriods) {
+          allPeriods.push(...res.settlementPeriods);
+        }
+      });
+      return allPeriods;
+    } catch {
+      return [];
     }
   },
 

@@ -1,5 +1,7 @@
 """FastAPI Application for UK National Wind Generation Day-Ahead Analysis."""
 
+import logging
+import os
 import re
 from datetime import date
 from typing import List, Optional
@@ -11,7 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 
 from app.config import ANALYSIS_MONTH, ANALYSIS_YEAR
-from app.database import init_db
+from app.database import get_db_connection, init_db
 from app.schemas import (
     DataQualityReport,
     DayAheadResponse,
@@ -21,11 +23,26 @@ from app.schemas import (
 from app.services.alignment import AlignmentService
 from app.services.metrics import MetricsService
 
+logger = logging.getLogger(__name__)
+
 
 @asynccontextmanager
 async def lifespan(app_instance: FastAPI):
     """Lifespan context manager to ensure database is initialized on startup."""
     init_db()
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT COUNT(*) FROM actual_wind")
+            count = cursor.fetchone()[0]
+            if count == 0:
+                logger.info("Database is empty on startup. Triggering ingestion pipeline...")
+                from app.services.ingestion import IngestionService
+                service = IngestionService()
+                service.run_ingestion()
+                logger.info("Startup raw data ingestion completed.")
+    except Exception as e:
+        logger.warning(f"Startup database check/ingestion notice: {e}")
     yield
 
 
@@ -36,10 +53,24 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# Configure CORS to allow future React frontend integration
+# Configure CORS for local development and production Vercel origins
+cors_origins_env = os.getenv("ALLOWED_ORIGINS", os.getenv("CORS_ORIGINS", ""))
+allowed_origins = [
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+]
+if cors_origins_env:
+    for origin in cors_origins_env.split(","):
+        clean_origin = origin.strip()
+        if clean_origin and clean_origin not in allowed_origins:
+            allowed_origins.append(clean_origin)
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=allowed_origins if "*" not in allowed_origins else ["*"],
+    allow_origin_regex=r"^https://.*\.vercel\.app$",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -57,6 +88,12 @@ def root_endpoint():
         "version": "1.0.0",
         "analysis_period": f"{ANALYSIS_YEAR}-{ANALYSIS_MONTH:02d}",
     }
+
+
+@app.get("/health", tags=["Health"])
+def health():
+    """Service health check."""
+    return {"status": "ok"}
 
 
 @app.get("/api/health", tags=["Health"])
